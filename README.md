@@ -4,9 +4,18 @@ Linux-native pipeline for getting books onto a [Xteink X4](https://www.xteink.co
 [Papyrix](https://github.com/bigbag/papyrix-reader) firmware as pre-paginated
 XTC files, so page turns are instant — no `Indexing...` overlays.
 
-The plugin work lives in a separate fork:
-**[renxida/calibre-xtc — branch `cedar/main`](https://github.com/renxida/calibre-xtc/tree/cedar/main)**.
-This repo wraps it.
+## Companion repos
+
+- **[renxida/calibre-xtc](https://github.com/renxida/calibre-xtc/tree/cedar/main)**
+  — fork of the Calibre XTC output plugin with bug fixes (orphan call,
+  chapter-index gaps, UTF-8 truncation, `@page` !important to win the EPUB
+  cascade), a WeasyPrint renderer that's ~20× faster than the original
+  Qt one, and four top-5 typography reports with embedded preview images.
+  Pulled in here as a git submodule.
+- **[renxida/papyrix-reader](https://github.com/renxida/papyrix-reader/tree/cedar/observed-issues)**
+  — fork of the Xteink X4 firmware with a `NOTES.cedar.md` covering two
+  real bugs hit while running v1.20.3 (first-boot state-machine wedge
+  without SD card; "Indexing..." overlay on every EPUB page turn).
 
 ## Quick start
 
