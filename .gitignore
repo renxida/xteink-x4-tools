@@ -1,0 +1,10 @@
+# Generated XTC files (multi-GB)
+samples/
+# Private SD backup
+sdcard-backup/
+# Snapshots of upstream code (linked instead)
+refs/
+# The calibre-xtc fork lives in its own repo
+calibre-xtc/
+__pycache__/
+*.pyc

@@ -1,0 +1,414 @@
+#!/usr/bin/env python3
+"""
+Sweep typography variants on a source EPUB and emit PNG previews.
+
+Renders each variant using --xtc-max-pages so each run is a few seconds
+even on a long book. Drops the XTC + a sample page into variants/<slug>/.
+"""
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+SOURCE = ROOT / "samples" / "player_of_games.epub"
+OUT_DIR = ROOT / "samples" / "variants"
+EXTRACT = ROOT / "calibre-xtc" / "tests" / "extract_xtc.py"
+WRAPPER = ROOT / "bin" / "epub2xtc"
+
+# Page in the rendered XTC to extract for the preview. Cover is page 1; PoG's
+# front matter (title, copyright, "Culture Plate" intro) eats roughly 14 pages
+# at default density, so we render past it and pick a deep prose page.
+SAMPLE_PAGE = 18      # 1-based
+MAX_PAGES = 20        # cap per render
+
+
+# Each variant: a slug (filesystem-safe), a human description, env-var overrides
+# layered onto the wrapper's defaults, plus extra ebook-convert flags.
+def font(name, desc, **extra):
+    return {
+        "slug": f"font-{slugify(name)}",
+        "category": "font",
+        "desc": f"{name} — {desc}",
+        "env": {"XTC_FONT_FAMILY": name, **extra.get("env", {})},
+        "flags": [],
+    }
+
+
+def setting(slug, desc, env=None, flags=None):
+    return {
+        "slug": f"setting-{slug}",
+        "category": "setting",
+        "desc": desc,
+        "env": env or {},
+        "flags": flags or [],
+    }
+
+
+def landscape(slug, desc, env=None, zoom=None):
+    """Landscape variant. Optional `zoom` overrides --xtc-zoom for per-font
+    calibration so all fonts produce roughly the same text-per-page."""
+    flags = ["--xtc-orientation", "landscape-right"]
+    if zoom is not None:
+        flags += ["--xtc-zoom", f"{zoom}"]
+    return {
+        "slug": f"landscape-{slug}",
+        "category": "landscape",
+        "desc": desc,
+        "env": env or {},
+        "flags": flags,
+    }
+
+
+def slugify(s):
+    return s.lower().replace(" ", "-").replace(",", "")
+
+
+VARIANTS = [
+    # Serif font sweep — same default config (24px effective via 1.5x zoom, justify, hyphens).
+    font("EB Garamond", "classical Garamond — refined and quiet"),
+    font("Source Serif 4", "Adobe humanist screen-friendly serif"),
+    font("Lora", "contemporary book serif designed for screens"),
+    font("Crimson Pro", "old-style serif designed for body text"),
+    font("Literata", "Google Books prose face"),
+    font("Vollkorn", "warm modern open serif"),
+    font("Spectral", "elegant text/display blend"),
+    font("Gentium", "humanist scholarly serif"),
+    font("Latin Modern Roman", "TeX Computer Modern look"),
+    font("DejaVu Serif", "modern serif (system default)"),
+    font("Liberation Serif", "Times-like classic"),
+    font("FreeSerif", "older URW++ Times-style"),
+    # Sans for comparison
+    font("Atkinson Hyperlegible Next", "engineered for e-ink / low-vision"),
+    font("DejaVu Sans", "workhorse sans"),
+    font("Inter", "modern UI sans"),
+    font("Liberation Sans", "Arial-like"),
+
+    # Setting sweep — DejaVu Serif baseline, vary one knob.
+    setting("smaller", "DejaVu Serif, smaller text (font 14 × zoom 1.3)",
+            flags=["--xtc-font-size", "14", "--xtc-zoom", "1.3"]),
+    setting("larger", "DejaVu Serif, larger text (font 18 × zoom 1.6)",
+            flags=["--xtc-font-size", "18", "--xtc-zoom", "1.6"]),
+    setting("wide-margins", "DejaVu Serif, generous 36px margins",
+            flags=["--xtc-margin-left", "36", "--xtc-margin-right", "36"]),
+    setting("narrow-margins", "DejaVu Serif, tight 12px margins",
+            flags=["--xtc-margin-left", "12", "--xtc-margin-right", "12"]),
+    setting("left-aligned", "DejaVu Serif, ragged-right (no justify)",
+            env={"XTC_TEXT_ALIGN": "left"}),
+    setting("no-hyphens", "DejaVu Serif, justify but no hyphenation",
+            env={"XTC_HYPHENS": "manual"}),
+    setting("loose-leading", "DejaVu Serif, looser line height (1.6)",
+            env={"XTC_LINE_HEIGHT": "1.6"}),
+    setting("tight-leading", "DejaVu Serif, tighter line height (1.2)",
+            env={"XTC_LINE_HEIGHT": "1.2"}),
+
+    # Combinations — favorite font × an interesting knob.
+    {
+        "slug": "combo-eb-garamond-larger",
+        "category": "combo",
+        "desc": "EB Garamond at 18pt × 1.6 zoom (bigger reading)",
+        "env": {"XTC_FONT_FAMILY": "EB Garamond"},
+        "flags": ["--xtc-font-size", "18", "--xtc-zoom", "1.6"],
+    },
+    {
+        "slug": "combo-lora-loose",
+        "category": "combo",
+        "desc": "Lora with looser line-height (1.55)",
+        "env": {"XTC_FONT_FAMILY": "Lora", "XTC_LINE_HEIGHT": "1.55"},
+        "flags": [],
+    },
+    {
+        "slug": "combo-vollkorn-ragged",
+        "category": "combo",
+        "desc": "Vollkorn, left-aligned (no justify, no hyphens)",
+        "env": {"XTC_FONT_FAMILY": "Vollkorn", "XTC_TEXT_ALIGN": "left",
+                "XTC_HYPHENS": "manual"},
+        "flags": [],
+    },
+    {
+        "slug": "combo-source-serif-narrow",
+        "category": "combo",
+        "desc": "Source Serif 4, tight 12px margins",
+        "env": {"XTC_FONT_FAMILY": "Source Serif 4"},
+        "flags": ["--xtc-margin-left", "12", "--xtc-margin-right", "12"],
+    },
+    {
+        "slug": "combo-vollkorn-dropcap",
+        "category": "combo",
+        "desc": "Vollkorn with drop cap on first paragraph of each chapter",
+        "env": {
+            "XTC_FONT_FAMILY": "Vollkorn",
+            "XTC_DROPCAP": "1",
+        },
+        "flags": [],
+        "sample_page": 12,  # Chapter 1 opens here at default density.
+    },
+    {
+        "slug": "combo-lora-dropcap",
+        "category": "combo",
+        "desc": "Lora with drop cap on first paragraph of each chapter",
+        "env": {
+            "XTC_FONT_FAMILY": "Lora",
+            "XTC_DROPCAP": "1",
+        },
+        "flags": [],
+        "sample_page": 12,
+    },
+    {
+        "slug": "combo-eb-garamond-dropcap",
+        "category": "combo",
+        "desc": "EB Garamond with drop cap on first paragraph of each chapter",
+        "env": {
+            "XTC_FONT_FAMILY": "EB Garamond",
+            "XTC_DROPCAP": "1",
+        },
+        "flags": [],
+        "sample_page": 11,  # EB Garamond is denser; chapter 1 lands on p11.
+    },
+    {
+        "slug": "combo-eb-garamond-smallcaps",
+        "category": "combo",
+        "desc": "EB Garamond, small-caps first line after heading",
+        "env": {
+            "XTC_FONT_FAMILY": "EB Garamond",
+            "XTC_EXTRA_CSS": (
+                "h1 + p::first-line, h2 + p::first-line, h3 + p::first-line { "
+                "font-variant-caps: all-small-caps; letter-spacing: 0.06em; }"
+            ),
+        },
+        "flags": [],
+    },
+    {
+        "slug": "combo-supersample",
+        "category": "combo",
+        "desc": "Lora with 2× supersample (sharper pre-dither)",
+        "env": {"XTC_FONT_FAMILY": "Lora", "XTC_SUPERSAMPLE": "2.0"},
+        "flags": [],
+    },
+
+    # Renderer comparison — Qt at default settings.
+    {
+        "slug": "renderer-qt",
+        "category": "renderer",
+        "desc": "Qt WebEngine renderer (for reference)",
+        "env": {"XTC_RENDERER": "qt"},
+        "flags": [],
+    },
+
+    # Landscape — pre-rotated. Top-5 fonts with per-font zoom calibrated so each
+    # font lays out roughly the same amount of text per page (target ~1000 pages
+    # for full Player of Games). Page count ∝ 1/size², so size scale = sqrt
+    # (target_pages / observed_pages_at_default).
+    #
+    #   font            default-pages  zoom-scale  zoom-applied
+    #   EB Garamond            861       1.078       1.617
+    #   Vollkorn               963       1.019       1.529
+    #   Lora                  1026       0.987       1.481
+    #   Literata              1040       0.980       1.471
+    #   Source Serif 4        1118       0.946       1.419
+    landscape("eb-garamond", "Landscape, EB Garamond (calibrated)",
+              env={"XTC_FONT_FAMILY": "EB Garamond"},
+              zoom=1.617),
+    landscape("lora", "Landscape, Lora (calibrated)",
+              env={"XTC_FONT_FAMILY": "Lora"},
+              zoom=1.481),
+    landscape("vollkorn", "Landscape, Vollkorn (calibrated)",
+              env={"XTC_FONT_FAMILY": "Vollkorn"},
+              zoom=1.529),
+    landscape("source-serif-4", "Landscape, Source Serif 4 (calibrated)",
+              env={"XTC_FONT_FAMILY": "Source Serif 4"},
+              zoom=1.419),
+    landscape("literata", "Landscape, Literata (calibrated)",
+              env={"XTC_FONT_FAMILY": "Literata"},
+              zoom=1.471),
+    landscape("dejavu-sans", "Landscape, DejaVu Sans (workhorse sans)",
+              env={"XTC_FONT_FAMILY": "DejaVu Sans"}),
+    landscape("lora-dropcap", "Landscape, Lora with drop cap",
+              env={"XTC_FONT_FAMILY": "Lora", "XTC_DROPCAP": "1"},
+              zoom=1.481),
+
+    # Landscape, monospace — calibrated to ~1100 pages of full PoG.
+    # Mono fonts get text-align: left + hyphens: manual since justified mono
+    # produces awful inter-word gaps.
+    #
+    #   font            default-pages  zoom-applied
+    #   JetBrains Mono       1355         1.352
+    #   IBM Plex Mono        1355         1.352
+    #   Iosevka              1165         1.458   (narrowest — Berkeley-Mono-ish)
+    #   0xProto              1199         1.437   (explicit Berkeley Mono alt)
+    #   Cascadia Code        1327         1.366
+    {"slug": "landscape-mono-jetbrains-mono",
+     "category": "landscape-mono",
+     "desc": "Landscape, JetBrains Mono (calibrated)",
+     "env": {"XTC_FONT_FAMILY": "JetBrains Mono",
+             "XTC_TEXT_ALIGN": "left", "XTC_HYPHENS": "manual"},
+     "flags": ["--xtc-orientation", "landscape-right", "--xtc-zoom", "1.352"]},
+    {"slug": "landscape-mono-ibm-plex-mono",
+     "category": "landscape-mono",
+     "desc": "Landscape, IBM Plex Mono (calibrated)",
+     "env": {"XTC_FONT_FAMILY": "IBM Plex Mono",
+             "XTC_TEXT_ALIGN": "left", "XTC_HYPHENS": "manual"},
+     "flags": ["--xtc-orientation", "landscape-right", "--xtc-zoom", "1.352"]},
+    {"slug": "landscape-mono-iosevka",
+     "category": "landscape-mono",
+     "desc": "Landscape, Iosevka (calibrated, narrow Berkeley-Mono-ish)",
+     "env": {"XTC_FONT_FAMILY": "Iosevka",
+             "XTC_TEXT_ALIGN": "left", "XTC_HYPHENS": "manual"},
+     "flags": ["--xtc-orientation", "landscape-right", "--xtc-zoom", "1.458"]},
+    {"slug": "landscape-mono-0xproto",
+     "category": "landscape-mono",
+     "desc": "Landscape, 0xProto (calibrated, open Berkeley Mono alt)",
+     "env": {"XTC_FONT_FAMILY": "0xProto",
+             "XTC_TEXT_ALIGN": "left", "XTC_HYPHENS": "manual"},
+     "flags": ["--xtc-orientation", "landscape-right", "--xtc-zoom", "1.437"]},
+    {"slug": "landscape-mono-cascadia-code",
+     "category": "landscape-mono",
+     "desc": "Landscape, Cascadia Code (calibrated)",
+     "env": {"XTC_FONT_FAMILY": "Cascadia Code",
+             "XTC_TEXT_ALIGN": "left", "XTC_HYPHENS": "manual"},
+     "flags": ["--xtc-orientation", "landscape-right", "--xtc-zoom", "1.366"]},
+    {"slug": "landscape-mono-monaspace-neon",
+     "category": "landscape-mono",
+     "desc": "Landscape, Monaspace Neon (calibrated, GitHub neogrotesque)",
+     "env": {"XTC_FONT_FAMILY": "Monaspace Neon",
+             "XTC_TEXT_ALIGN": "left", "XTC_HYPHENS": "manual"},
+     "flags": ["--xtc-orientation", "landscape-right", "--xtc-zoom", "1.338"]},
+    {"slug": "landscape-mono-monaspace-argon",
+     "category": "landscape-mono",
+     "desc": "Landscape, Monaspace Argon (calibrated, humanist mono)",
+     "env": {"XTC_FONT_FAMILY": "Monaspace Argon",
+             "XTC_TEXT_ALIGN": "left", "XTC_HYPHENS": "manual"},
+     "flags": ["--xtc-orientation", "landscape-right", "--xtc-zoom", "1.338"]},
+    {"slug": "landscape-mono-maple-mono",
+     "category": "landscape-mono",
+     "desc": "Landscape, Maple Mono (calibrated, modern with ligatures)",
+     "env": {"XTC_FONT_FAMILY": "Maple Mono",
+             "XTC_TEXT_ALIGN": "left", "XTC_HYPHENS": "manual"},
+     "flags": ["--xtc-orientation", "landscape-right", "--xtc-zoom", "1.352"]},
+
+    # Landscape, sans-serif body — calibrated to ~1100 pages.
+    #   Inter                       1199    1.437
+    #   IBM Plex Sans               1080    1.514
+    #   Atkinson Hyperlegible Next  1068    1.522   (built for low-vision / e-ink)
+    #   Source Sans 3               1199    1.437
+    #   Noto Sans                   1117    1.489
+    {"slug": "landscape-sans-inter",
+     "category": "landscape-sans",
+     "desc": "Landscape, Inter (calibrated, contemporary UI sans)",
+     "env": {"XTC_FONT_FAMILY": "Inter"},
+     "flags": ["--xtc-orientation", "landscape-right", "--xtc-zoom", "1.437"]},
+    {"slug": "landscape-sans-ibm-plex-sans",
+     "category": "landscape-sans",
+     "desc": "Landscape, IBM Plex Sans (calibrated)",
+     "env": {"XTC_FONT_FAMILY": "IBM Plex Sans"},
+     "flags": ["--xtc-orientation", "landscape-right", "--xtc-zoom", "1.514"]},
+    {"slug": "landscape-sans-atkinson",
+     "category": "landscape-sans",
+     "desc": "Landscape, Atkinson Hyperlegible (calibrated, e-ink/low-vision)",
+     "env": {"XTC_FONT_FAMILY": "Atkinson Hyperlegible Next"},
+     "flags": ["--xtc-orientation", "landscape-right", "--xtc-zoom", "1.522"]},
+    {"slug": "landscape-sans-source-sans-3",
+     "category": "landscape-sans",
+     "desc": "Landscape, Source Sans 3 (calibrated)",
+     "env": {"XTC_FONT_FAMILY": "Source Sans 3"},
+     "flags": ["--xtc-orientation", "landscape-right", "--xtc-zoom", "1.437"]},
+    {"slug": "landscape-sans-noto-sans",
+     "category": "landscape-sans",
+     "desc": "Landscape, Noto Sans (calibrated)",
+     "env": {"XTC_FONT_FAMILY": "Noto Sans"},
+     "flags": ["--xtc-orientation", "landscape-right", "--xtc-zoom", "1.489"]},
+]
+
+
+def render(v):
+    out_dir = OUT_DIR / v["slug"]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    xtc_path = out_dir / "out.xtc"
+    if xtc_path.exists():
+        xtc_path.unlink()
+
+    env = {**os.environ, **v["env"]}
+    cmd = [str(WRAPPER), str(SOURCE), str(xtc_path),
+           "--xtc-max-pages", str(MAX_PAGES), *v["flags"]]
+    t0 = time.perf_counter()
+    proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    elapsed = time.perf_counter() - t0
+
+    if proc.returncode != 0:
+        return {"error": proc.stderr.splitlines()[-1] if proc.stderr else "non-zero exit",
+                "elapsed_s": elapsed}
+
+    # Probe page count via verifier (cheap)
+    info_cmd = ["calibre-debug", "-e", str(EXTRACT), "--", str(xtc_path), "--info"]
+    info = subprocess.run(info_cmd, capture_output=True, text=True)
+    page_count = None
+    for line in info.stdout.splitlines():
+        if line.strip().startswith("Pages:"):
+            page_count = int(line.split(":")[1].strip())
+            break
+
+    # Extract the chosen sample page. Variants can override SAMPLE_PAGE — useful
+    # for dropcap which only fires on chapter-opening pages.
+    target_page = v.get("sample_page", SAMPLE_PAGE)
+    sample = min(target_page, page_count) if page_count else target_page
+    # Clean stale extracted PNGs (including any prior preview) before extracting,
+    # so the glob below only sees the new file.
+    for p in out_dir.glob("*.png"):
+        p.unlink()
+    ext_cmd = ["calibre-debug", "-e", str(EXTRACT), "--",
+               str(xtc_path), "-p", str(sample), "-o", str(out_dir)]
+    subprocess.run(ext_cmd, capture_output=True)
+    pngs = list(out_dir.glob("*.png"))
+    sample_png = pngs[0] if pngs else None
+    if sample_png:
+        stable = out_dir / "preview.png"
+        sample_png.rename(stable)
+        sample_png = stable
+
+    return {
+        "elapsed_s": round(elapsed, 2),
+        "page_count": page_count,
+        "preview_page": sample,
+        "xtc_bytes": xtc_path.stat().st_size,
+        "preview_png": str(sample_png.relative_to(ROOT)) if sample_png else None,
+    }
+
+
+def main():
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    # Optional substring filter: ./run-variants landscape  → only landscape-* variants.
+    filt = sys.argv[1] if len(sys.argv) > 1 else None
+    selected = [v for v in VARIANTS if not filt or filt in v["slug"]]
+    if filt:
+        print(f"Filter '{filt}': {len(selected)}/{len(VARIANTS)} variants")
+    # Preserve previously-computed entries for variants we're not re-rendering.
+    existing = {}
+    if filt and (OUT_DIR / "results.json").exists():
+        existing = {r["slug"]: r for r in json.loads((OUT_DIR / "results.json").read_text())}
+    results = []
+    for v in selected:
+        sys.stdout.write(f"[ ] {v['slug']:35s} ")
+        sys.stdout.flush()
+        r = render(v)
+        v_result = {**v, **r}
+        results.append(v_result)
+        if "error" in r:
+            print(f"  FAIL ({r.get('elapsed_s', '?')}s): {r['error']}")
+        else:
+            print(f"  ok  ({r['elapsed_s']}s, {r['page_count']} pages)")
+
+    # Merge with existing if a filter narrowed the set.
+    if existing:
+        merged = list(existing.values())
+        new_slugs = {r["slug"] for r in results}
+        merged = [r for r in merged if r["slug"] not in new_slugs] + results
+        results = merged
+    summary = OUT_DIR / "results.json"
+    summary.write_text(json.dumps(results, indent=2, default=str))
+    print(f"\nResults: {summary}")
+
+
+if __name__ == "__main__":
+    main()

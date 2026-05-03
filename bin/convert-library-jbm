@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# convert-library-jbm — render every EPUB in ~/calibre_library to XTC using
+# the wrapper's defaults (JetBrains Mono, landscape, calibrated zoom).
+#
+# Output: samples/library_jbm_landscape/{banks-culture,other}/<NN-slug>.xtc
+# Iain M. Banks Culture series gets numbered prefix in publication order.
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+LIBRARY="${LIBRARY:-$HOME/calibre_library}"
+OUT="$ROOT/samples/library_jbm_landscape"
+mkdir -p "$OUT/banks-culture" "$OUT/other"
+
+WRAPPER="$ROOT/bin/epub2xtc"
+
+# Iain M. Banks Culture series in publication order.
+declare -a CULTURE=(
+  "01:Consider Phlebas"
+  "02:Player of Games"
+  "03:Use of Weapons"
+  "04:State of the Art"
+  "05:Excession"
+  "06:Inversions"
+  "07:Look to Windward"
+  "08:Matter"
+  "09:Surface Detail"
+  "10:Hydrogen Sonata"
+)
+
+slugify() {
+  echo "${1,,}" | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-//; s/-$//'
+}
+
+mapfile -d '' EPUBS < <(find "$LIBRARY" -maxdepth 4 -iname '*.epub' -print0)
+printf "Found %d EPUBs.\n\n" "${#EPUBS[@]}"
+
+ok=0; fail=0; skip=0; total=${#EPUBS[@]}
+for epub in "${EPUBS[@]}"; do
+  base="$(basename "$epub" .epub)"
+
+  prefix=""
+  out_dir="$OUT/other"
+  for entry in "${CULTURE[@]}"; do
+    num="${entry%%:*}"
+    title="${entry#*:}"
+    if [[ "$base" == *"$title"* ]]; then
+      prefix="${num}-"
+      out_dir="$OUT/banks-culture"
+      break
+    fi
+  done
+  # Strip author suffix " - Iain M. Banks" / " - Phil Hine" etc.
+  short=$(echo "$base" | sed 's/ - .*//')
+  slug=$(slugify "$short")
+  out="$out_dir/${prefix}${slug}.xtc"
+
+  printf '[%s] %s\n' "$short" "$(basename "$out")"
+  if [[ -f "$out" ]]; then
+    echo "         skip (exists)"
+    skip=$((skip + 1))
+    continue
+  fi
+  if "$WRAPPER" "$epub" "$out" >/dev/null 2>&1; then
+    bytes=$(stat -c %s "$out")
+    pages=$(calibre-debug -e "$ROOT/calibre-xtc/tests/extract_xtc.py" -- \
+            "$out" --info 2>&1 | grep -oE 'Pages: [0-9]+' | head -1)
+    printf '         ok  %d MB · %s\n' "$((bytes/1024/1024))" "$pages"
+    ok=$((ok + 1))
+  else
+    echo "         FAIL"
+    fail=$((fail + 1))
+  fi
+done
+
+echo
+echo "Done: $ok ok · $skip skipped · $fail failed (of $total)"
+echo "Output tree:"
+find "$OUT" -type f -name '*.xtc' | sort

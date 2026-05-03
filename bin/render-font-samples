@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Render full Player of Games once per top-15 font (5 serif + 5 sans + 5 mono),
+# all in landscape with calibrated zoom for apples-to-apples comparison.
+# Output: samples/font_samples/<NN-class-slug>.xtc
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+SOURCE="$ROOT/samples/player_of_games.epub"
+OUT="$ROOT/samples/font_samples"
+mkdir -p "$OUT"
+
+# Each entry: NN class font_family zoom [extra_env_pair…]
+# Extra env: KEY=VALUE pairs separated by ';' (mono needs left-align + no hyphens)
+SAMPLES=(
+  "01 serif EB_Garamond 1.617"
+  "02 serif Lora 1.481"
+  "03 serif Vollkorn 1.529"
+  "04 serif Source_Serif_4 1.419"
+  "05 serif Literata 1.471"
+  "06 sans Atkinson_Hyperlegible_Next 1.522"
+  "07 sans Inter 1.437"
+  "08 sans Source_Sans_3 1.437"
+  "09 sans IBM_Plex_Sans 1.514"
+  "10 sans Noto_Sans 1.489"
+  "11 mono Iosevka 1.458 left manual"
+  "12 mono 0xProto 1.437 left manual"
+  "13 mono JetBrains_Mono 1.352 left manual"
+  "14 mono Monaspace_Argon 1.338 left manual"
+  "15 mono Maple_Mono 1.352 left manual"
+)
+
+for s in "${SAMPLES[@]}"; do
+  read -r nn cls font_under zoom align hyph <<<"$s"
+  font="${font_under//_/ }"
+  slug=$(echo "${font_under,,}" | tr '_' '-')
+  out="$OUT/${nn}-${cls}-${slug}.xtc"
+  printf '[%s] %s %s (zoom %s) → %s\n' "$nn" "$cls" "$font" "$zoom" "$(basename "$out")"
+  if [[ -f "$out" ]]; then
+    echo "  skip (exists)"
+    continue
+  fi
+  env_args=(XTC_RENDERER=weasy "XTC_FONT_FAMILY=$font")
+  if [[ "$cls" == "mono" ]]; then
+    env_args+=("XTC_TEXT_ALIGN=$align" "XTC_HYPHENS=$hyph")
+  fi
+  env "${env_args[@]}" "$ROOT/bin/epub2xtc" "$SOURCE" "$out" \
+    --xtc-orientation landscape-right --xtc-zoom "$zoom" >/dev/null 2>&1
+  bytes=$(stat -c %s "$out")
+  printf '  ok  %d MB\n' "$((bytes/1024/1024))"
+done
+
+echo "done."

@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Render the full Player of Games book once per top-5 font, so each XTC
+# is a real on-device reading candidate (not just a preview slice).
+#
+# Output goes to samples/test_corpus/full-PoG-<slug>.xtc
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+SOURCE="$ROOT/samples/player_of_games.epub"
+OUT="$ROOT/samples/test_corpus"
+mkdir -p "$OUT"
+
+declare -a FONTS=(
+  "EB Garamond"
+  "Lora"
+  "Vollkorn"
+  "Source Serif 4"
+  "Literata"
+)
+
+for f in "${FONTS[@]}"; do
+  slug=$(echo "$f" | tr '[:upper:] ' '[:lower:]-')
+  out="$OUT/full-PoG-$slug.xtc"
+  printf '%-20s -> %s\n' "$f" "$(basename "$out")"
+  XTC_FONT_FAMILY="$f" "$ROOT/bin/epub2xtc" "$SOURCE" "$out" >/dev/null 2>&1
+  ls -la "$out" | awk '{printf "  %s bytes\n", $5}'
+done
+echo "done"

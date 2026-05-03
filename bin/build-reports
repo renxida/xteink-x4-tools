@@ -1,0 +1,346 @@
+#!/usr/bin/env python3
+"""
+Generate ALL_VARIANTS.md and TOP5_PORTRAIT.md from samples/variants/results.json.
+
+The all-variants report dumps every preview grouped by category (font /
+setting / renderer / landscape). The top-5 report holds the curated
+favorites with longer commentary and setup snippets. Top-5 picks are
+listed in TOP5 below; edit that list after eyeballing the all-variants
+output.
+"""
+import json
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+VARIANTS_DIR = ROOT / "samples" / "variants"
+RESULTS = VARIANTS_DIR / "results.json"
+OUT_DIR = ROOT / "calibre-xtc"
+
+# Shared font commentary — used by both portrait and landscape top-5 reports.
+FONT_NOTES = {
+    "eb-garamond":
+        "Classical Garamond. The most refined and quietly beautiful of the set — "
+        "you'd take this seriously as a printed-book typeface. Letterforms are "
+        "narrower, italics ('Morat') are particularly lovely, and the rhythm of a "
+        "paragraph feels considered.",
+    "lora":
+        "Modern open serif designed for screens. Very readable, contemporary book "
+        "feel. Friendlier than Garamond — more open counters, sturdier verticals — "
+        "and dithers cleanly because the strokes are weighty enough.",
+    "vollkorn":
+        "Warm modern serif, more weight than Lora and slightly more presence. The "
+        "texture of body text is even and inviting; reads like a high-quality "
+        "trade paperback.",
+    "source-serif-4":
+        "Adobe's humanist screen serif. Compact and high-quality — fits more text "
+        "per page than Lora/Vollkorn while staying clear. Pick this if you want "
+        "to read more before turning the page.",
+    "literata":
+        "Google's reading-app face (designed for Google Play Books). Sturdy, "
+        "warm, slightly heavier — strong contrast between strokes that holds up "
+        "to the e-ink dither.",
+}
+
+# Curated top-5 portrait picks. Slugs reference entries in results.json.
+TOP5 = [
+    ("font-eb-garamond", FONT_NOTES["eb-garamond"]),
+    ("font-lora", FONT_NOTES["lora"]),
+    ("font-vollkorn", FONT_NOTES["vollkorn"]),
+    ("font-source-serif-4", FONT_NOTES["source-serif-4"]),
+    ("font-literata", FONT_NOTES["literata"]),
+]
+
+TOP5_LANDSCAPE = [
+    ("landscape-eb-garamond", FONT_NOTES["eb-garamond"]),
+    ("landscape-lora", FONT_NOTES["lora"]),
+    ("landscape-vollkorn", FONT_NOTES["vollkorn"]),
+    ("landscape-source-serif-4", FONT_NOTES["source-serif-4"]),
+    ("landscape-literata", FONT_NOTES["literata"]),
+]
+
+TOP5_LANDSCAPE_SANS = [
+    ("landscape-sans-atkinson",
+     "Atkinson Hyperlegible was designed by the Braille Institute specifically "
+     "to maximize low-vision and e-ink readability. Distinctive letterforms "
+     "(unmistakable a / e / o, exaggerated tail on Q) so similar glyphs don't "
+     "blur together. The 'serious' choice if you actually want a sans for "
+     "long reading."),
+    ("landscape-sans-inter",
+     "Modern UI sans by Rasmus Andersson. Clean, neutral, works for body "
+     "text although it was designed for screens at small sizes. Slightly "
+     "tighter feel than Source Sans."),
+    ("landscape-sans-source-sans-3",
+     "Adobe's open humanist sans, designed for reading. Friendlier than Inter, "
+     "more old-style proportions. A good middle ground."),
+    ("landscape-sans-ibm-plex-sans",
+     "IBM's contribution to open sans. Slightly geometric, very even color in "
+     "a paragraph. Pairs naturally with IBM Plex Mono for mixed-content books."),
+    ("landscape-sans-noto-sans",
+     "Google's Universal Declaration of Type — covers nearly every script. "
+     "If you read in multiple languages, this is the one font that won't "
+     "fall back unexpectedly."),
+]
+
+TOP5_LANDSCAPE_MONO = [
+    ("landscape-mono-iosevka",
+     "The narrowest of the set — the closest open-source approximation to "
+     "Berkeley Mono in proportion. Tight letterspacing, condensed feel, very "
+     "high information density. Reads like a terminal in a serious mood."),
+    ("landscape-mono-0xproto",
+     "Designed explicitly as an open Berkeley-Mono-style alternative. Slightly "
+     "wider than Iosevka but with the same technical clarity. Round terminals, "
+     "open counters."),
+    ("landscape-mono-jetbrains-mono",
+     "JetBrains' purpose-built editor face. Generous spacing, readable at "
+     "small sizes, strong italic. The 'all-rounder' mono — nothing flashy, "
+     "nothing wrong."),
+    ("landscape-mono-monaspace-argon",
+     "GitHub's humanist mono — the friendliest of the bunch. Softer terminals, "
+     "more handwritten energy than the others. Pick this if you usually find "
+     "monospace too clinical."),
+    ("landscape-mono-maple-mono",
+     "Modern open mono with extensive ligatures and a distinctive geometric "
+     "italic. Slightly more rounded than JetBrains; vibrant, contemporary."),
+]
+
+
+def load():
+    return json.loads(RESULTS.read_text())
+
+
+def md_image(rel_path):
+    return f"![]({rel_path})"
+
+
+def grid(items, cols=2):
+    """Render results as a markdown table grid (cols-wide), with caption above each."""
+    rows = []
+    for i in range(0, len(items), cols):
+        chunk = items[i:i + cols]
+        # Pad to col count
+        chunk = chunk + [None] * (cols - len(chunk))
+        # Caption row
+        caps = [(f"**{r['desc']}**<br/>`{r['slug']}` · {r['page_count']}p · {r['xtc_bytes']/1024:.0f} KB"
+                 if r else "") for r in chunk]
+        rows.append("| " + " | ".join(caps) + " |")
+        # Header divider
+        if i == 0:
+            rows.append("| " + " | ".join(["---"] * cols) + " |")
+        # Image row
+        imgs = [(f"![]({relative_image(r)})" if r and r.get('preview_png') else "") for r in chunk]
+        rows.append("| " + " | ".join(imgs) + " |")
+    return "\n".join(rows)
+
+
+def write_all(results):
+    out = OUT_DIR / "VARIANTS.md"
+    valid = [r for r in results if "error" not in r]
+
+    by_cat = {}
+    for r in valid:
+        by_cat.setdefault(r["category"], []).append(r)
+
+    lines = [
+        "# XTC rendering variants",
+        "",
+        "Every typography variant rendered against the opening of *Player of Games* "
+        "(Iain M. Banks, EPUB), then one prose page extracted from each. Source: "
+        "`samples/player_of_games.epub` → `bin/epub2xtc` → 480×800 (or 800×480 for "
+        "landscape).",
+        "",
+        "All variants use the WeasyPrint renderer unless the entry says otherwise. "
+        "The default config is 16pt × 1.5 zoom, 20px margins, justified text, "
+        "automatic hyphenation. Each variant changes one knob from that default.",
+        "",
+    ]
+    cat_titles = {
+        "font": "## Fonts",
+        "setting": "## Settings (size, margins, alignment, leading)",
+        "combo": "## Combinations (font × setting)",
+        "renderer": "## Rendering engine",
+        "landscape": "## Landscape, serif (calibrated for equal text-per-page)",
+        "landscape-mono": "## Landscape, monospace (calibrated)",
+        "landscape-sans": "## Landscape, sans-serif (calibrated)",
+    }
+    for cat in ["font", "setting", "combo", "renderer",
+                "landscape", "landscape-sans", "landscape-mono"]:
+        if cat not in by_cat:
+            continue
+        lines += [cat_titles[cat], ""]
+        cols = 2 if cat == "landscape" else 3
+        lines.append(grid(by_cat[cat], cols=cols))
+        lines.append("")
+
+    failed = [r for r in results if "error" in r]
+    if failed:
+        lines += ["## Failed", ""]
+        for r in failed:
+            lines.append(f"- `{r['slug']}` — {r['desc']}: {r['error']}")
+        lines.append("")
+
+    out.write_text("\n".join(lines))
+    print(f"Wrote {out}")
+
+
+def write_top5(results, picks, out_path, *, title, intro, repro_extra=""):
+    """Write a top-5 picks markdown file.
+
+    Args:
+        results: All variant records (a dict-by-slug lookup is built from this).
+        picks:   Ordered list of (slug, note_text) tuples to feature.
+        out_path: Path to the markdown file (under calibre-xtc/).
+        title:   H1 title.
+        intro:   Paragraphs to put under the title (list of strings or one block).
+        repro_extra: Extra ebook-convert flags appended to each repro snippet
+                     (e.g. orientation flag for landscape).
+    """
+    by_slug = {r["slug"]: r for r in results}
+    intro_lines = [intro] if isinstance(intro, str) else list(intro)
+    lines = [f"# {title}", ""]
+    for p in intro_lines:
+        lines += [p, ""]
+    for i, (slug, note) in enumerate(picks, 1):
+        r = by_slug.get(slug)
+        if not r:
+            lines.append(f"## #{i}. {slug} (missing)\n")
+            continue
+        png_rel = relative_image(r)
+        heading = r["desc"].split(" — ")[0]
+        # Drop a leading "Landscape, " tag from the heading — it's redundant
+        # in the landscape report.
+        heading = heading.replace("Landscape, ", "")
+        env_vars = r.get("env") or {}
+        cmd_parts = []
+        for k in ("XTC_FONT_FAMILY", "XTC_TEXT_ALIGN", "XTC_HYPHENS",
+                  "XTC_DROPCAP", "XTC_LINE_HEIGHT", "XTC_FONT_SIZE_ADJUST"):
+            if k in env_vars:
+                cmd_parts.append(f"{k}='{env_vars[k]}'")
+        cmd_parts.append("bin/epub2xtc book.epub book.xtc")
+        # Forward any --xtc-* flags from the variant (e.g. zoom, orientation)
+        for flag in r.get("flags", []):
+            cmd_parts.append(flag)
+        # If repro_extra was already covered by flags, don't duplicate it.
+        if repro_extra and repro_extra not in " ".join(cmd_parts):
+            cmd_parts.append(repro_extra)
+        repro = " ".join(cmd_parts)
+        lines += [
+            f"## #{i}. {heading}",
+            "",
+            note,
+            "",
+            md_image(png_rel),
+            "",
+            f"```\n{repro}\n```",
+            "",
+        ]
+    out_path.write_text("\n".join(lines))
+    print(f"Wrote {out_path}")
+
+
+PREVIEW_DIR = OUT_DIR / "preview-images" / "variants"
+
+
+def relative_image(r):
+    """Path to the preview PNG, relative to the markdown file's location.
+
+    Images are copied into calibre-xtc/preview-images/variants/<slug>.png so
+    they live inside the git-tracked repo and render correctly on GitHub.
+    Landscape variants are rotated 90° CCW so the on-screen orientation
+    matches how you'd hold the device — XTC stores them as 480×800 with
+    rotated glyphs (the device counter-rotates the framebuffer).
+    """
+    src = ROOT / r["preview_png"]
+    PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
+    dst = PREVIEW_DIR / f"{r['slug']}.png"
+    src_mtime = src.stat().st_mtime
+    if dst.exists() and dst.stat().st_mtime >= src_mtime:
+        return str(dst.relative_to(OUT_DIR))
+    if r.get("category", "").startswith("landscape"):
+        from PIL import Image
+        Image.open(src).rotate(90, expand=True).save(dst)
+    else:
+        dst.write_bytes(src.read_bytes())
+    return str(dst.relative_to(OUT_DIR))
+
+
+def main():
+    results = load()
+    write_all(results)
+
+    portrait_intro = [
+        "After surveying every variant in [VARIANTS.md](VARIANTS.md), these "
+        "five are the picks I'd actually read on. Each image is one prose page "
+        "from the opening of *Player of Games* at 480×800.",
+        "All use the WeasyPrint renderer (sync, no Qt, no GPU) at the default "
+        "16pt × 1.5 zoom, 20px margins, justified text, automatic hyphenation. "
+        "Only the font changes between picks.",
+        "Add `XTC_DROPCAP=1` to any of these for a 3em drop cap on the first "
+        "paragraph of every chapter — see the dropcap entries in VARIANTS.md "
+        "for what that looks like.",
+    ]
+    write_top5(
+        results,
+        TOP5,
+        OUT_DIR / "TOP5_PORTRAIT.md",
+        title="Top 5 portrait picks",
+        intro=portrait_intro,
+    )
+
+    landscape_intro = [
+        "Same five fonts as [TOP5_PORTRAIT.md](TOP5_PORTRAIT.md), pre-rotated "
+        "for landscape reading on the X4 (`landscape-right`). Each image is "
+        "displayed in its natural reading orientation (800 wide × 480 tall).",
+        "On the device: hold it rotated 90° clockwise from normal so the page "
+        "appears upright. Papyrix doesn't auto-rotate XTC bitmaps, so a "
+        "portrait XTC viewed in landscape mode shows text on the left half of "
+        "the screen with the right half blank — a separate landscape XTC "
+        "fixes that.",
+    ]
+    write_top5(
+        results,
+        TOP5_LANDSCAPE,
+        OUT_DIR / "TOP5_LANDSCAPE.md",
+        title="Top 5 landscape picks",
+        intro=landscape_intro,
+        repro_extra="--xtc-orientation landscape-right",
+    )
+
+    landscape_sans_intro = [
+        "Sans-serif body fonts in landscape. Calibrated to roughly the same "
+        "text-per-page (~1100 pages of full *Player of Games*). Sans hits a "
+        "different note from serif for prose — less authoritative, more "
+        "modern. Atkinson Hyperlegible specifically was engineered for e-ink "
+        "and low-vision readers; on a 480×800 1-bit panel that pedigree "
+        "shows.",
+    ]
+    write_top5(
+        results,
+        TOP5_LANDSCAPE_SANS,
+        OUT_DIR / "TOP5_LANDSCAPE_SANS.md",
+        title="Top 5 landscape sans picks",
+        intro=landscape_sans_intro,
+        repro_extra="--xtc-orientation landscape-right",
+    )
+
+    landscape_mono_intro = [
+        "Five monospaced fonts in landscape, calibrated so each fits roughly "
+        "the same amount of text per page (~1100 pages of full *Player of "
+        "Games*). Justification is off and hyphenation is suppressed since "
+        "monospace + justify produces obvious inter-word gaps.",
+        "Berkeley Mono is the typeface a lot of programmer-readers want; it's "
+        "commercial. The closest open-source approximations here are Iosevka "
+        "(narrowest) and 0xProto (explicitly designed as a Berkeley Mono "
+        "alternative).",
+    ]
+    write_top5(
+        results,
+        TOP5_LANDSCAPE_MONO,
+        OUT_DIR / "TOP5_LANDSCAPE_MONO.md",
+        title="Top 5 landscape mono picks",
+        intro=landscape_mono_intro,
+        repro_extra="--xtc-orientation landscape-right",
+    )
+
+
+if __name__ == "__main__":
+    main()

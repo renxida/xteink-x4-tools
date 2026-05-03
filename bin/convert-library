@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# convert-library — batch-convert every EPUB in ~/calibre_library to XTC.
+# Sequential (Qt WebEngine in software mode is CPU-heavy; parallelism slows
+# everyone down). Skips books whose .xtc already exists unless --force.
+set -euo pipefail
+
+LIBRARY="${LIBRARY:-$HOME/calibre_library}"
+OUT_DIR="${OUT_DIR:-$HOME/Projects/xtc-tools/samples/library}"
+FORCE=0
+
+for arg in "$@"; do
+  case "$arg" in
+    -f|--force) FORCE=1 ;;
+    -h|--help)
+      cat <<EOF
+Usage: $0 [--force]
+  LIBRARY=$LIBRARY
+  OUT_DIR=$OUT_DIR
+EOF
+      exit 0
+      ;;
+  esac
+done
+
+mkdir -p "$OUT_DIR"
+WRAPPER="$(dirname "$0")/epub2xtc"
+
+mapfile -d '' EPUBS < <(find "$LIBRARY" -maxdepth 4 -iname '*.epub' -print0)
+TOTAL=${#EPUBS[@]}
+echo "Found $TOTAL EPUBs in $LIBRARY"
+
+OK=0
+SKIP=0
+FAIL=0
+i=0
+for epub in "${EPUBS[@]}"; do
+  i=$((i+1))
+  base="$(basename "$epub" .epub)"
+  out="$OUT_DIR/${base}.xtc"
+  printf '[%d/%d] %s\n' "$i" "$TOTAL" "$base"
+  if [[ -f "$out" && $FORCE -eq 0 ]]; then
+    echo "         → skip (already exists)"
+    SKIP=$((SKIP+1))
+    continue
+  fi
+  if "$WRAPPER" "$epub" "$out" >"$out.log" 2>&1; then
+    OK=$((OK+1))
+    size=$(stat -c %s "$out")
+    pages=$(grep -oE 'Total pages rendered: [0-9]+' "$out.log" | tail -1 | grep -oE '[0-9]+')
+    printf '         → ok  %d bytes, %s pages\n' "$size" "${pages:-?}"
+  else
+    FAIL=$((FAIL+1))
+    echo "         → FAIL (see $out.log)"
+  fi
+done
+
+echo
+echo "done: $OK ok, $SKIP skipped, $FAIL failed (of $TOTAL)"

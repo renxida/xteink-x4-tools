@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# restage-sd — wipe the X4 SD card (FAT32, ~14 GB) and stage the test corpus.
+#
+# Detects the card by FAT label (Papyrix-formatted cards have no label by
+# default; we match against the auto-mount path in /media/$USER/). Refuses to
+# proceed if the mountpoint is something obviously not the SD (e.g. /home).
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+CORPUS="$ROOT/samples/test_corpus"
+USERMEDIA="/media/$USER"
+
+shopt -s nullglob
+mounts=("$USERMEDIA"/*)
+if [[ ${#mounts[@]} -eq 0 ]]; then
+  echo "No card mounted under $USERMEDIA. Insert it and re-run." >&2
+  exit 1
+elif [[ ${#mounts[@]} -gt 1 ]]; then
+  echo "Multiple mountpoints under $USERMEDIA — be explicit:" >&2
+  printf '  %s\n' "${mounts[@]}" >&2
+  exit 1
+fi
+mount="${mounts[0]}"
+case "$mount" in
+  /home/*|/|/usr/*|/etc/*)
+    echo "Refusing to wipe '$mount' — that's not an SD card." >&2
+    exit 1
+    ;;
+esac
+
+echo "Will wipe: $mount"
+echo "And restage from: $CORPUS"
+echo
+read -r -p "Type 'yes' to proceed: " confirm
+if [[ "$confirm" != "yes" ]]; then
+  echo "aborted." >&2
+  exit 1
+fi
+
+echo "Wiping…"
+( cd "$mount" && rm -rf -- ./* ./.[!.]* 2>/dev/null || true )
+echo "Copying…"
+cp -r "$CORPUS"/* "$mount/"
+sync
+
+echo "Done. Files on card:"
+ls -la "$mount/" | head -20
+
+echo
+echo "Run 'udisksctl unmount -b \$(findmnt -no SOURCE $mount)' before pulling."

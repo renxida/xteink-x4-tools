@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# epub2xtc — Linux EPUB→XTC converter wrapper
+#
+# Wraps `ebook-convert` with WeasyPrint as the default renderer. Pass-through
+# of any --xtc-* flags to ebook-convert. Typography knobs are env vars; see
+# calibre-xtc/NOTES.cedar.md for the full table.
+#
+# Usage:
+#   bin/epub2xtc input.epub output.xtc                # WeasyPrint, defaults
+#   XTC_FONT_FAMILY='EB Garamond' bin/epub2xtc ...    # font swap
+#   XTC_DROPCAP=1 bin/epub2xtc ...                    # add drop caps
+#   XTC_RENDERER=qt bin/epub2xtc ...                  # fall back to Qt path
+set -euo pipefail
+
+case "${1:-}" in
+  -h|--help)
+    sed -n '2,12p' "$0" | sed 's|^# \?||'
+    exit 0
+    ;;
+esac
+if [[ $# -lt 2 ]]; then
+  sed -n '2,12p' "$0" | sed 's|^# \?||' >&2
+  exit 64
+fi
+
+# Default to the WeasyPrint renderer: fully sync, no Qt, no GPU,
+# ~20× faster than Qt WebEngine on real books. Override with
+# XTC_RENDERER=qt to fall back to the original Qt path.
+: "${XTC_RENDERER:=weasy}"
+export XTC_RENDERER
+
+# Default font: JetBrains Mono in landscape with calibrated zoom — the user's
+# pick after surveying every variant. Mono needs left-align + no hyphenation
+# (justify produces big inter-word gaps in mono).
+: "${XTC_FONT_FAMILY:=JetBrains Mono}"
+: "${XTC_TEXT_ALIGN:=left}"
+: "${XTC_HYPHENS:=manual}"
+export XTC_FONT_FAMILY XTC_TEXT_ALIGN XTC_HYPHENS
+
+# Qt path's env: software RHI (only used when XTC_RENDERER=qt).
+export QT_QUICK_BACKEND=software
+export QT_RHI_BACKEND=null
+export LIBGL_ALWAYS_SOFTWARE=1
+# Qt path's hardcoded scroll/capture delays — way over-conservative.
+: "${XTC_SCROLL_DELAY_MS:=20}"
+: "${XTC_CAPTURE_DELAY_MS:=10}"
+export XTC_SCROLL_DELAY_MS XTC_CAPTURE_DELAY_MS
+
+# Inject orientation + zoom defaults if user hasn't passed them.
+defaults=()
+case " $* " in
+  *" --xtc-orientation "*) ;;
+  *) defaults+=(--xtc-orientation landscape-right) ;;
+esac
+case " $* " in
+  *" --xtc-zoom "*) ;;
+  *) defaults+=(--xtc-zoom 1.352) ;;  # JetBrains Mono calibrated
+esac
+
+exec ebook-convert "$@" "${defaults[@]}"
