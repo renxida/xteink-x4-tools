@@ -1,9 +1,12 @@
-# xtc-tools
+# xteink-x4-tools
 
-Linux-native pipeline for getting books onto a Xteink X4 (running
-[Papyrix](https://github.com/bigbag/papyrix-reader) firmware) as pre-paginated
-XTC files, so page turns are instant. The hard work happens in the
-[`calibre-xtc`](calibre-xtc/) fork of `thirteen37/calibre-xtc`.
+Linux-native pipeline for getting books onto a [Xteink X4](https://www.xteink.com/) running
+[Papyrix](https://github.com/bigbag/papyrix-reader) firmware as pre-paginated
+XTC files, so page turns are instant — no `Indexing...` overlays.
+
+The plugin work lives in a separate fork:
+**[renxida/calibre-xtc — branch `cedar/main`](https://github.com/renxida/calibre-xtc/tree/cedar/main)**.
+This repo wraps it.
 
 ## Quick start
 
@@ -28,8 +31,17 @@ faster than the original Qt path on real books).
 
 ## Where to look
 
-- Reading the typography variants: [`calibre-xtc/VARIANTS.md`](calibre-xtc/VARIANTS.md)
-- Picking a font for actual reading: [`calibre-xtc/TOP5_PORTRAIT.md`](calibre-xtc/TOP5_PORTRAIT.md)
-- Fork-specific changes vs upstream: [`calibre-xtc/NOTES.cedar.md`](calibre-xtc/NOTES.cedar.md)
-- Files to put on the SD card: [`samples/test_corpus/README.md`](samples/test_corpus/README.md)
-- What just happened: [`logs/LOG.md`](logs/LOG.md)
+In the fork (`renxida/calibre-xtc` branch `cedar/main`):
+
+- [INDEX.md](https://github.com/renxida/calibre-xtc/blob/cedar/main/INDEX.md) — entry point
+- [TOP5_PORTRAIT.md](https://github.com/renxida/calibre-xtc/blob/cedar/main/TOP5_PORTRAIT.md) — five serif picks for portrait
+- [TOP5_LANDSCAPE.md](https://github.com/renxida/calibre-xtc/blob/cedar/main/TOP5_LANDSCAPE.md) — same five, calibrated landscape
+- [TOP5_LANDSCAPE_SANS.md](https://github.com/renxida/calibre-xtc/blob/cedar/main/TOP5_LANDSCAPE_SANS.md) — five sans-serif picks (Atkinson Hyperlegible leads)
+- [TOP5_LANDSCAPE_MONO.md](https://github.com/renxida/calibre-xtc/blob/cedar/main/TOP5_LANDSCAPE_MONO.md) — five monospaced picks (Iosevka, 0xProto are Berkeley-Mono-ish)
+- [VARIANTS.md](https://github.com/renxida/calibre-xtc/blob/cedar/main/VARIANTS.md) — every variant tried
+- [DITHERING.md](https://github.com/renxida/calibre-xtc/blob/cedar/main/DITHERING.md) — Floyd-Steinberg vs threshold
+- [NOTES.cedar.md](https://github.com/renxida/calibre-xtc/blob/cedar/main/NOTES.cedar.md) — env-var reference + fork-vs-upstream changes
+
+In this repo:
+
+- [logs/LOG.md](logs/LOG.md) — chronological project journal (newest first)
