@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+"""
+Build a single-file font tour XTC: 15 pages, same prose, different font per page,
+each page labelled with its font name. Lets you flip through the device once
+and pick a winner without juggling 15 files.
+
+Output: samples/font-tour.xtc
+"""
+import os
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+PLUGIN = ROOT / "calibre-xtc" / "calibre_xtc_plugin"
+sys.path.insert(0, str(PLUGIN))
+
+# Render directly via WeasyPrint — bypasses the plugin's user-stylesheet
+# !important font-family override which would force a single font on every page.
+import weasyprint
+import pypdfium2 as pdfium
+from PIL import Image
+from xtc_encoder import XTCEncoder
+
+# Each entry: (font_family, category_label, calibrated_zoom_target)
+# Calibration values come from earlier landscape full-PoG measurements.
+FONTS = [
+    # serif
+    ("EB Garamond",                "serif",  1.617),
+    ("Lora",                       "serif",  1.481),
+    ("Vollkorn",                   "serif",  1.529),
+    ("Source Serif 4",             "serif",  1.419),
+    ("Literata",                   "serif",  1.471),
+    # sans
+    ("Atkinson Hyperlegible Next", "sans",   1.522),
+    ("Inter",                      "sans",   1.437),
+    ("Source Sans 3",              "sans",   1.437),
+    ("IBM Plex Sans",              "sans",   1.514),
+    ("Noto Sans",                  "sans",   1.489),
+    # mono
+    ("Iosevka",                    "mono",   1.458),
+    ("0xProto",                    "mono",   1.437),
+    ("JetBrains Mono",             "mono",   1.352),
+    ("Monaspace Argon",            "mono",   1.338),
+    ("Maple Mono",                 "mono",   1.352),
+]
+
+# Banks PoG opening — short enough to fit on one landscape page even with
+# the largest mono at calibrated zoom. Italics, smart quotes, em dash, and
+# regular prose all in ~80 words.
+SAMPLE_HTML = """\
+<p><em>This is the story of a man who went far away for a long time, just
+to play a game. The man is a game-player called &ldquo;Gurgeh.&rdquo; The
+story starts with a battle that is not a battle, and ends with a game
+that is not a game.</em></p>
+<p>Dust drifted with each footstep. He limped across the desert &mdash;
+the noise of distant surf boomed through the helmet. Somehow he had
+survived; he had not expected to.</p>
+"""
+
+# Page size in CSS px (landscape 800×480). Margins leave room for the label
+# strip at top and the natural content area below.
+W, H = 800, 480
+MARGIN_TOP = 60   # holds the label band
+MARGIN = 24       # other sides
+BASE_FONT_PT = 16
+
+PER_FONT_CSS = []
+for fam, cat, zoom in FONTS:
+    slug = fam.lower().replace(" ", "-").replace(",", "")
+    font_size = BASE_FONT_PT * zoom
+    align = "left" if cat == "mono" else "justify"
+    hyphens = "manual" if cat == "mono" else "auto"
+    PER_FONT_CSS.append(f"""
+section.f-{slug}, section.f-{slug} *,
+section.f-{slug} h1, section.f-{slug} p {{
+    font-family: "{fam}", serif !important;
+}}
+section.f-{slug} .body p {{
+    font-size: {font_size:.1f}px;
+    text-align: {align};
+    hyphens: {hyphens};
+    -webkit-hyphens: {hyphens};
+}}
+""")
+
+CSS = f"""
+@page {{
+    size: {W}px {H}px;
+    margin: {MARGIN_TOP}px {MARGIN}px {MARGIN}px {MARGIN}px;
+}}
+html, body {{
+    color: black;
+    background: white;
+    margin: 0;
+    padding: 0;
+    line-height: 1.4;
+    widows: 3;
+    orphans: 3;
+}}
+section {{
+    page-break-after: always;
+    position: relative;
+}}
+section:last-child {{
+    page-break-after: auto;
+}}
+.label {{
+    position: running(label);
+    font-weight: bold;
+    font-size: 18px;
+}}
+.label .cat {{
+    font-weight: normal;
+    font-size: 14px;
+    color: black;
+}}
+.label .index {{
+    font-weight: normal;
+    font-size: 14px;
+}}
+@page {{
+    @top-left {{ content: element(label); padding-top: 16px; padding-left: 8px; }}
+    @top-right {{
+        content: counter(page) " / " counter(pages);
+        font-size: 12px;
+        padding-top: 16px;
+        padding-right: 8px;
+    }}
+    margin-top: 56px;
+}}
+.body p:first-child {{ text-indent: 0; }}
+.body p {{ margin: 0 0 0.5em 0; text-indent: 1.4em; }}
+""" + "\n".join(PER_FONT_CSS)
+
+
+def build_html():
+    sections = []
+    for i, (fam, cat, _zoom) in enumerate(FONTS, 1):
+        slug = fam.lower().replace(" ", "-").replace(",", "")
+        sections.append(f"""\
+<section class="f-{slug}">
+    <div class="label">
+        <span class="index">{i:02d} / {len(FONTS)}</span>
+        &nbsp;&middot;&nbsp;
+        <span class="name">{fam}</span>
+        &nbsp;&middot;&nbsp;
+        <span class="cat">{cat}</span>
+    </div>
+    <div class="body">{SAMPLE_HTML}</div>
+</section>
+""")
+    return f"""<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Font tour</title>
+<style>{CSS}</style>
+</head>
+<body>{''.join(sections)}</body></html>"""
+
+
+def render_pages(html: str):
+    pdf_bytes = weasyprint.HTML(string=html).write_pdf()
+    pdf = pdfium.PdfDocument(pdf_bytes)
+    scale = 96.0 / 72.0
+    pages = []
+    for p in range(len(pdf)):
+        bitmap = pdf[p].render(scale=scale).to_pil()
+        pil = bitmap.convert("L")
+        if pil.size != (W, H):
+            pil = pil.resize((W, H), Image.LANCZOS)
+        pages.append(pil)
+    return pages
+
+
+def encode_xtc(pages, out_path: Path):
+    enc = XTCEncoder(width=480, height=800)
+    enc.set_metadata(title="Font tour", author="xtc-tools",
+                     publisher="", language="eng")
+    for pil in pages:
+        # Floyd-Steinberg dither; rotate 90° CW so it reads in landscape on device.
+        bw = pil.convert("1")
+        rotated = bw.rotate(90, expand=True)
+        # Device expects 480×800 portrait-stored landscape pages.
+        if rotated.size != (480, 800):
+            rotated = rotated.resize((480, 800), Image.NEAREST)
+        enc.add_page(rotated)
+    enc.write(str(out_path))
+
+
+def main():
+    out = ROOT / "samples" / "font-tour.xtc"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    html = build_html()
+    pages = render_pages(html)
+    encode_xtc(pages, out)
+    print(f"wrote {out} — {len(pages)} pages, {out.stat().st_size/1024/1024:.1f} MB")
+
+
+if __name__ == "__main__":
+    main()

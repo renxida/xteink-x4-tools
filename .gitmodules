@@ -1,0 +1,4 @@
+[submodule "calibre-xtc"]
+	path = calibre-xtc
+	url = https://github.com/renxida/calibre-xtc.git
+	branch = cedar/main
